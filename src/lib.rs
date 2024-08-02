@@ -255,18 +255,19 @@ fn get_format_key_map() -> HashMap<String, String> {
  */
 fn get_commit_log_format(path: String, branch: String, placeholders: Vec<String>) -> Result<Vec<HashMap<String, String>>, JsError> {
     let interval = "<<INTERVAL>>";
+    let commit_end = "<<COMMIT_END>>";
     let mut format = String::from("--pretty=format:");
     for key in placeholders.iter(){
         format = format + &key + interval;
     }
-    format = format.trim_end_matches(interval).to_string();
+    format = format.trim_end_matches(interval).to_string() + commit_end;
     let key_map = get_format_key_map();
     let output = get_command_output("git", &path, &["log", &branch, &format]);
     let mut res = Vec::new();
     match output{
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.trim().split("\n") {
+            for line in stdout.trim().trim_end_matches(&commit_end).split(&commit_end) {
                 let datas = line.split(interval).collect::<Vec<_>>();
                 let mut map = HashMap::<String, String>::new();
                 for i in 0..placeholders.len(){
