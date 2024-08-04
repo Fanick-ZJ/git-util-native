@@ -100,3 +100,16 @@ pub struct BranchStatDailyContribute {
     pub total_stat: StatDailyContribute,
     pub authors_stat: Vec<AuthorStatDailyContribute>,
 }
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct RepoFileInfo {
+    pub name: String,
+    pub dir: String,
+    pub object_mode: String,
+    pub object_type: String,
+    pub object_name: String,
+    pub object_size: String,
+    pub is_dir: bool,
+    pub children: Vec<RepoFileInfo>
+}

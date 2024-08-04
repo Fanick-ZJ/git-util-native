@@ -1,7 +1,9 @@
 #![deny(clippy::all)]
 use std::{collections::{HashMap, HashSet}, io, os::windows::process::CommandExt, process::{Command, Output}};
 use napi::{Error as napiError, JsError};
-use structs::{Author, AuthorStatDailyContribute, Branch, BranchCreatedInfo, BranchStatDailyContribute, Remote, RepositoryFull, RepositorySimple, StatDailyContribute};
+use serde_json::Error;
+use structs::{Author, AuthorStatDailyContribute, Branch, BranchCreatedInfo, BranchStatDailyContribute, Remote, RepoFileInfo, RepositoryFull, RepositorySimple, StatDailyContribute};
+use util::get_basename;
 
 
 mod structs;
@@ -435,6 +437,10 @@ fn get_branchs_create_info (path: String, branchs: Vec<String>) -> Result<Vec<Br
 }
 
 #[napi]
+/**
+ * Get the repository info of a repository
+ * @param path path to the repository
+*/
 fn get_repository_info_full (path: String) -> Result<RepositoryFull, JsError> {
     let branches = get_branches(path.to_string())?;
     let authors = get_all_authors(path.to_string())?;
@@ -477,6 +483,10 @@ fn get_repository_info_full (path: String) -> Result<RepositoryFull, JsError> {
 }
 
 #[napi]
+/**
+ * Get the repository info in a simple way
+ * @param path path to the repository
+ */
 fn get_repository_info_simple (path: String) -> Result<RepositorySimple, JsError> {
     let branches = get_branches(path.to_string())?;
     let current_branch = get_current_branch(path.to_string())?;
@@ -497,6 +507,9 @@ fn get_repository_info_simple (path: String) -> Result<RepositorySimple, JsError
 }
 
 #[napi]
+/**
+ * Get the statistic of daily contribute in a branch
+ */
 fn get_contribute_stat (path: String, branch: String) -> Result<BranchStatDailyContribute, JsError> {
     let format = "--pretty=format:".to_string()+ COMMIT_INETRVAL + "%an" + PARAM_INTERVAL + "%ae" + PARAM_INTERVAL + "%at";
     let branch_create_info = get_branch_create_info(path.to_string(), branch.to_string())?;
@@ -636,4 +649,108 @@ fn get_contribute_stat (path: String, branch: String) -> Result<BranchStatDailyC
         }
     }
 
+}
+
+/**
+ * Insert the file info list
+ */
+fn insert_file_to_tree(file_list: &mut Vec<RepoFileInfo>, object_mode: &str, object_type: &str, object_name: &str, object_size: &str, object_path: &str) {
+    let file_tree = object_path.split("/").collect::<Vec<&str>>();
+    let mut tmp_file_list = file_list;
+    // println!("{}", file_tree.len());
+    for i in 0..file_tree.len() {
+        let index = tmp_file_list.iter().position(|t| t.name == file_tree[i] && t.is_dir);
+        match index {
+            Some( index ) => {
+                // println!("{}", index);
+                tmp_file_list = &mut tmp_file_list[index].children;
+            }
+            None => {
+                let is_last = i == file_tree.len() - 1;
+                let is_dir = object_mode.starts_with("040000") || !is_last;
+                // println!("{} {} {} {} {} {}",file_tree.len() - 1, i, file_tree[i], is_dir, is_last, object_path);
+                let dir = if i != 0 { file_tree[0..i].join("/") } else {"./".to_string()};
+                let file = RepoFileInfo {
+                    name: file_tree[i].to_string(),
+                    dir,
+                    object_mode: if is_last {object_mode.to_string()} else {"".to_string()},
+                    object_type: if is_last {object_type.to_string()} else {"".to_string()},
+                    object_name: if is_last {object_name.to_string()} else {"".to_string()},
+                    object_size: if is_last {object_size.to_string()} else {"".to_string()},
+                    is_dir,
+                    children: Vec::<RepoFileInfo>::new(),
+                };
+                tmp_file_list.push(file);
+                // println!("{:?}", tmp_file_list);
+                if is_dir {
+                    tmp_file_list = tmp_file_list.last_mut().unwrap().children.as_mut();
+                }
+            }
+        }
+        
+    }
+}
+
+/**
+ * From the file info list, generate the file tree
+ */
+fn file_info_list_to_tree (file_info_list: Vec<&str>) -> Vec<RepoFileInfo> {
+    let mut file_list: Vec<RepoFileInfo> = Vec::new();
+    for line in file_info_list {
+        let file_info = line.split(PARAM_INTERVAL).collect::<Vec<&str>>();
+        if file_info.len() == 5 {
+            let object_mode = file_info[0];
+            let object_type = file_info[1];
+            let object_size = file_info[2].trim();
+            let object_name = file_info[3];
+            let object_path = file_info[4];
+            // objectMode Code:
+            // 040000: Directory
+            // 100644: Regular non-executable file
+            // 100664: Regular non-executable group-writeable file
+            // 100755: Regular executable file
+            // 120000: Symbolic link
+            // 160000: Gitlink
+            let file_tree = object_path.split("/").collect::<Vec<&str>>();
+            if file_tree.len() > 1 {
+                insert_file_to_tree(&mut file_list, object_mode, object_type, object_name, object_size, object_path)
+            } else { 
+                let is_dir = object_mode.starts_with("040000");
+                let file = RepoFileInfo {
+                    name: object_path.to_string(),
+                    dir: "./".to_string(),
+                    object_mode: object_mode.to_string(),
+                    object_type: object_type.to_string(),
+                    object_name: object_name.to_string(),
+                    object_size: object_size.to_string(),
+                    is_dir,
+                    children: Vec::<RepoFileInfo>::new(),
+                };
+                file_list.push(file);
+            }
+       }
+    }
+    return file_list
+}
+
+#[napi]
+/**
+ * Get the file list of a repository
+ */
+fn get_repo_file_list (path: String, branch_or_hash: String) -> Result<Vec<RepoFileInfo>, JsError> {
+    let format = format!("--format=\"%(objectmode){}%(objecttype){}%(objectsize:padded){}%(objectname){}%(path)\"", PARAM_INTERVAL, PARAM_INTERVAL, PARAM_INTERVAL, PARAM_INTERVAL);
+    let output = get_command_output("git", &path, &["ls-tree", "-r", &branch_or_hash, &format]);
+    match output {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let lines = stdout.trim().split("\n").collect::<Vec<&str>>();
+            let file_list = file_info_list_to_tree(lines);
+            Ok(file_list)
+
+        }
+        Err(e) => {
+            let err = napiError::from(e);
+            Err(JsError::from(err))
+        }
+    }
 }
