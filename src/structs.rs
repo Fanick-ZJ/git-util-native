@@ -79,8 +79,6 @@ pub struct RepositorySimple {
  * The statistic of daily contribute in a branch
  */
 pub struct StatDailyContribute {
-    pub start: String,
-    pub end: String,
     pub commit_count: i32,
     pub data_list: Vec<String>,
     pub insertion: Vec<i32>,

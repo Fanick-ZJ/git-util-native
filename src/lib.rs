@@ -506,8 +506,6 @@ fn get_contribute_stat (path: String, branch: String) -> Result<BranchStatDailyC
         Ok(output) => {
             let mut authors_stat = HashMap::<String, AuthorStatDailyContribute>::new();
             let mut total_stat = StatDailyContribute {
-                start: "".to_string(),
-                end: "".to_string(),
                 commit_count: 0,
                 data_list: Vec::<String>::new(),
                 insertion: Vec::<i32>::new(),
@@ -532,9 +530,6 @@ fn get_contribute_stat (path: String, branch: String) -> Result<BranchStatDailyC
                 let name = auth_info[0].to_string();
                 let email = auth_info[1].to_string();
                 let date = auth_info[2].to_string();
-                //  get the start and end date
-                if i == 0{ total_stat.start = date.to_string(); }
-                else if i == commits.len() - 1 { total_stat.end = date.to_string(); }
                 // if this author has contained
                 if authors_stat.contains_key(&name) {
                     let author = authors_stat.get_mut(&name).unwrap();
@@ -571,12 +566,10 @@ fn get_contribute_stat (path: String, branch: String) -> Result<BranchStatDailyC
                     // new author
                     let mut author = AuthorStatDailyContribute {
                         author: Author {
-                            name: name,
+                            name: name.to_string(),
                             email: email,
                         },
                         stat: StatDailyContribute {
-                            start: "".to_string(),
-                            end: "".to_string(),
                             commit_count: 1,
                             data_list: Vec::<String>::new(),
                             insertion: Vec::<i32>::new(),
@@ -597,6 +590,7 @@ fn get_contribute_stat (path: String, branch: String) -> Result<BranchStatDailyC
                     if change_info.len() > 2 {
                         author.stat.deletions.push(change2_info[0].parse::<i32>().unwrap());
                     }
+                    authors_stat.insert(name, author);
                 }
                 // total stat
                 total_stat.commit_count += 1;
