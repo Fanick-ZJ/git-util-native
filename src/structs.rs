@@ -4,7 +4,7 @@ use std::{cmp::Eq, collections::{hash_map::RandomState, HashMap}, string};
 
 
 #[napi(object)]
-#[derive(Clone, Eq)]
+#[derive(Clone, Eq, Debug)]
 pub struct Author {
     pub name: String,
     pub email: String
@@ -112,4 +112,46 @@ pub struct RepoFileInfo {
     pub object_size: String,
     pub is_dir: bool,
     pub children: Vec<RepoFileInfo>
+}
+
+#[napi]
+#[derive(Debug)]
+pub enum FileStatusType {
+    Added,
+    Deleted,
+    Modified,
+    Renamed,
+    Copied,
+    Updated,
+    Unknown
+}
+
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct FileStatus {
+    pub path: String,
+    pub status: FileStatusType,
+    pub message: String
+}
+
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct FileStatusReport {
+    pub title: String,
+    pub hash: String,
+    pub time: String,
+    pub author: Author,
+    pub status: Vec<FileStatus>
+}
+
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct FileDiffContext {
+    pub commit_hash1: String,
+    pub commit_hash2: String,
+    pub file_path: String,
+    pub addition: i32,
+    pub deletion: i32,
+    pub context: String,
+    pub file_status: FileStatusType
 }

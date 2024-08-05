@@ -2,7 +2,7 @@
 use std::{collections::{HashMap, HashSet}, io, os::windows::process::CommandExt, process::{Command, Output}};
 use napi::{Error as napiError, JsError};
 use serde_json::Error;
-use structs::{Author, AuthorStatDailyContribute, Branch, BranchCreatedInfo, BranchStatDailyContribute, Remote, RepoFileInfo, RepositoryFull, RepositorySimple, StatDailyContribute};
+use structs::{Author, AuthorStatDailyContribute, Branch, BranchCreatedInfo, BranchStatDailyContribute, FileDiffContext, FileStatus, FileStatusReport, FileStatusType, Remote, RepoFileInfo, RepositoryFull, RepositorySimple, StatDailyContribute};
 use util::get_basename;
 
 
@@ -751,6 +751,95 @@ fn get_repo_file_list (path: String, branch_or_hash: String) -> Result<Vec<RepoF
         Err(e) => {
             let err = napiError::from(e);
             Err(JsError::from(err))
+        }
+    }
+}
+
+#[napi]
+/**
+ * Get the file status of a commit
+ */
+fn get_commit_file_status (path: String, hash: String) -> Result<FileStatusReport, JsError> {
+    let format = format!("--format=%H{}%s{}%an{}%ae{}%at", PARAM_INTERVAL, PARAM_INTERVAL, PARAM_INTERVAL, PARAM_INTERVAL);
+    let output = get_command_output("git", &path, &["show", &hash, "--name-status", "--oneline", &format]);
+    match output {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let lines = stdout.trim().split("\n").filter(|t| *t != "").collect::<Vec<&str>>();
+            let commit_info = lines[0].trim().split(PARAM_INTERVAL).collect::<Vec<&str>>();
+            let commit_hash = commit_info[0];
+            let commit_message = commit_info[1];
+            let commit_author = commit_info[2];
+            let commit_author_email = commit_info[3];
+            let commit_time = commit_info[4];
+            let file_status = lines[1..].iter().map(|line| {
+                let params = line.split("\t").collect::<Vec<&str>>();
+                let file_path = params[1].to_string();
+                let mut message = "".to_string();
+                let status_flag = params[0][0..1].to_string();
+                let status = match status_flag.as_str() {
+                    "A" => FileStatusType::Added,
+                    "D" => FileStatusType::Deleted,
+                    "M" => FileStatusType::Modified,
+                    "R" => {
+                        if params.len() == 3 {
+                            message = params[1].to_string() + " => " + params[2];
+                        }
+                        FileStatusType::Renamed
+                    },
+                    "C" => FileStatusType::Copied,
+                    "U" => FileStatusType::Updated,
+                    _ => FileStatusType::Unknown,
+                };
+                FileStatus {
+                    path: file_path,
+                    status,
+                    message,
+                }
+            }).collect::<Vec<FileStatus>>();
+            let file_status_report = FileStatusReport {
+                title: commit_message.to_string(),
+                hash: commit_hash.to_string(),
+                status: file_status,
+                time: commit_time.to_string(),
+                author: Author {
+                    name: commit_author.to_string(),
+                    email: commit_author_email.to_string(),
+                }
+            };
+            Ok(file_status_report)
+        }
+        Err(e) => {
+            let err = napiError::from(e);
+            Err(JsError::from(err))
+        }
+    }
+}
+
+// #[napi]
+// fn diff_file_context (repo: String, commit_hash1: String, commit_hash2: String, file_path: String) -> Result<FileDiffContext, JsError> {
+//     // 先用从 git show hash1 hash2 --name-status --format="" file_path 来获取文件在两个提交见的状态，是需改还是删除还是重命名等等
+//     // 如果是文件中的修改，则调用 git diff hash1 hash2 -- file_path 来记录文件中修改的数量，二进制文件不需要做，只需要提示为二进制文件即可
+//     //      如果是重命名、删除的话，就不用做，提供说明
+//     // 如果是文件中修改的话，使用 
+// }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_commit_file_status() {    
+        let path = String::from(r"E:\workSpace\Rust\rust_test");
+        let hash = String::from("6a8a10948c80df189f79ff680df66d688b93bdd2");
+        let res = get_commit_file_status(path.to_string(), hash.to_string());
+        match res {
+            Ok(res) => {
+                println!("{:#?}", res);
+            },
+            Err(e) => {
+            }
         }
     }
 }
