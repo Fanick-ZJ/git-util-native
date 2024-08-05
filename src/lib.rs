@@ -821,7 +821,7 @@ fn get_commit_file_status (path: String, hash: String) -> Result<FileStatusRepor
 //     // 先用从 git show hash1 hash2 --name-status --format="" file_path 来获取文件在两个提交见的状态，是需改还是删除还是重命名等等
 //     // 如果是文件中的修改，则调用 git diff hash1 hash2 -- file_path 来记录文件中修改的数量，二进制文件不需要做，只需要提示为二进制文件即可
 //     //      如果是重命名、删除的话，就不用做，提供说明
-//     // 如果是文件中修改的话，使用 
+//     // 如果是文件中修改的话，使用 git cat-file -p hash:path 来获取文件内容
 // }
 
 
