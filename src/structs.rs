@@ -1,7 +1,6 @@
 use napi_derive::napi;
 use core::hash::Hash;
-use std::{cmp::Eq, collections::{hash_map::RandomState, HashMap}, string};
-
+use std::{cmp::Eq, collections::{hash_map::RandomState, HashMap}, io, string};
 
 #[napi(object)]
 #[derive(Clone, Eq, Debug)]
@@ -152,6 +151,7 @@ pub struct FileDiffContext {
     pub file_path: String,
     pub addition: i32,
     pub deletion: i32,
-    pub context: String,
+    pub context1: String,
+    pub context2: String,
     pub file_status: FileStatusType
 }

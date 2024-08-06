@@ -1,7 +1,6 @@
 #![deny(clippy::all)]
-use std::{collections::{HashMap, HashSet}, io, os::windows::process::CommandExt, process::{Command, Output}};
+use std::{collections::{HashMap, HashSet}, env::VarError, error::Error, fmt::format, io, os::windows::process::CommandExt, process::{Command, Output}};
 use napi::{Error as napiError, JsError};
-use serde_json::Error;
 use structs::{Author, AuthorStatDailyContribute, Branch, BranchCreatedInfo, BranchStatDailyContribute, FileDiffContext, FileStatus, FileStatusReport, FileStatusType, Remote, RepoFileInfo, RepositoryFull, RepositorySimple, StatDailyContribute};
 use util::get_basename;
 
@@ -816,13 +815,194 @@ fn get_commit_file_status (path: String, hash: String) -> Result<FileStatusRepor
     }
 }
 
-// #[napi]
-// fn diff_file_context (repo: String, commit_hash1: String, commit_hash2: String, file_path: String) -> Result<FileDiffContext, JsError> {
-//     // 先用从 git show hash1 hash2 --name-status --format="" file_path 来获取文件在两个提交见的状态，是需改还是删除还是重命名等等
-//     // 如果是文件中的修改，则调用 git diff hash1 hash2 -- file_path 来记录文件中修改的数量，二进制文件不需要做，只需要提示为二进制文件即可
-//     //      如果是重命名、删除的话，就不用做，提供说明
-//     // 如果是文件中修改的话，使用 git cat-file -p hash:path 来获取文件内容
-// }
+fn get_file_commit_status(path: String, commit_hash1: String, file_path: String) -> Result<(FileStatusType, String), String> {
+    let output: Result<Output, io::Error> = get_command_output("git", &path, &["show", &commit_hash1, "--name-status",  "--format=", "--", &file_path]);
+    match output {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let lines = stdout.trim().split_ascii_whitespace().collect::<Vec<&str>>();
+            if lines.len() > 0 {
+                let status_flag = lines[0][0..1].to_string();
+                let mut message = "".to_string();
+                let status = match status_flag.as_str() {
+                    "A" => FileStatusType::Added,
+                    "D" => FileStatusType::Deleted,
+                    "M" => FileStatusType::Modified,
+                    "R" => {
+                        message = lines[1].to_string() + " => " + lines[2];
+                        FileStatusType::Renamed
+                    },
+                    "C" => FileStatusType::Copied,
+                    "U" => FileStatusType::Updated,
+                    _ => FileStatusType::Unknown,
+                };
+                Ok((status, message))
+            }
+            else {
+                Err("No status found".to_string())
+            }
+        }
+        Err(e) => {
+            Err(e.source().unwrap().to_string())
+        }
+    }
+}
+
+#[napi]
+/**
+ * Get the file diff context of a file
+ * @param repo: the path of the repository
+ * @param commit_hash1: the hash of the first commit
+ * @param commit_hash2: the hash of the second commit
+ * @param file_path: the path of the file
+ */
+fn diff_file_context (repo: String, commit_hash1: String, commit_hash2: String, file_path: String) -> Result<FileDiffContext, JsError> {
+    // 先用从 git show hash1 hash2 --name-status --format="" file_path 来获取文件在两个提交见的状态，是需改还是删除还是重命名等等
+    // 如果是文件中的修改，则调用 git diff --shortstat hash1 hash2 -- file_path 来记录文件中修改的数量，二进制文件不需要做，只需要提示为二进制文件即可
+    //      如果是重命名、删除的话，就不用做，提供说明
+    // 如果是文件中修改的话，使用 git cat-file -p hash:path 来获取文件内容
+    let commit_status = get_file_commit_status(repo.to_string(), commit_hash2.to_string(), file_path.to_string());
+    match commit_status {
+        Ok(commit_status) => {
+            let (status, message) = commit_status;
+            let mut context1 = "".to_string();
+            let mut context2 = "".to_string();
+            match status {
+                // 添加
+                FileStatusType::Added =>{
+                    let output = get_command_output("git", &repo, &["cat-file", "-p", &format!("{}:{}", commit_hash1, file_path)]);
+                    match output {
+                        Ok(output) => {
+                            let stdout = String::from_utf8_lossy(&output.stdout);
+                            context1 = stdout.to_string();
+                            Ok(FileDiffContext {
+                                commit_hash1: commit_hash1.to_string(),
+                                commit_hash2: commit_hash2.to_string(),
+                                file_path: file_path.to_string(),
+                                addition: stdout.trim().lines().count() as i32,
+                                deletion: 0,
+                                context1,
+                                context2,
+                                file_status: status,
+                            })
+                        }
+                        Err(e) => {
+                            let err = napiError::from(io::Error::new(io::ErrorKind::Other, format!("Failed to get file content:\nfile path: {}\ncommit hash: {}", file_path, commit_hash1)));
+                            Err(JsError::from(err))
+                        }
+                    }
+                } 
+                // 删除
+                FileStatusType::Deleted => {
+                    let output = get_command_output("git", &repo, &["cat-file", "-p", &format!("{}:{}", commit_hash1, file_path)]);
+                    match output {
+                        Ok(output) => {
+                            let stdout = String::from_utf8_lossy(&output.stdout);
+                            context1 = stdout.to_string();
+                            Ok(FileDiffContext {
+                                commit_hash1: commit_hash1.to_string(),
+                                commit_hash2: commit_hash2.to_string(),
+                                file_path: file_path.to_string(),
+                                addition: 0,
+                                deletion: stdout.trim().lines().count() as i32,
+                                context1,
+                                context2,
+                                file_status: status,
+                            })
+                        }
+                        Err(e) => {
+                            let err = napiError::from(io::Error::new(io::ErrorKind::Other, format!("Failed to get file content:\nfile path: {}\ncommit hash: {}", file_path, commit_hash2)));
+                            Err(JsError::from(err))
+                        }
+                    }
+
+                }
+                // 修改
+                FileStatusType::Modified => {
+                    // 获取修改的数量
+                    let output = get_command_output("git", &repo, &["diff", "--shortstat", &commit_hash1, &commit_hash2, "--", &file_path]);
+                    let mut addition = 0;
+                    let mut deletion = 0;
+                    match output {
+                        Ok(output) => {
+                            let stdout = String::from_utf8_lossy(&output.stdout);
+                            let lines = stdout.trim().split(", ").collect::<Vec<&str>>();
+                            let change_info1 = lines[1].split(" ").collect::<Vec<&str>>();
+                            if lines.len() > 2 {
+                                if change_info1[1].starts_with("insertion") {
+                                    addition = change_info1[0].parse::<i32>().unwrap();
+                                    let change_info2 = lines[2].split(" ").collect::<Vec<&str>>();
+                                    deletion = change_info2[0].parse::<i32>().unwrap();
+                                }
+                            } else {
+                                if change_info1[1].starts_with("insertion") {
+                                    addition = change_info1[0].parse::<i32>().unwrap();
+                                } else {
+                                    deletion = change_info1[0].parse::<i32>().unwrap();
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            let err = napiError::from(io::Error::new(io::ErrorKind::Other, format!("Failed to get file diff:\nfile path: {}\ncommit hash1: {}\ncommit hash2: {}", file_path, commit_hash1, commit_hash2)));
+                            return Err(JsError::from(err))
+                        }
+                    }
+                    // 获取文件内容
+                    let mut context1: String;
+                    let context1_output = get_command_output("git", &repo, &["cat-file", "-p", &format!("{}:{}", commit_hash1, file_path)]);
+                    match context1_output {
+                        Ok(context1_output) => {
+                            let stdout = String::from_utf8_lossy(&context1_output.stdout);
+                            context1 = stdout.to_string();
+                        }
+                        Err(e) => {
+                            let err = napiError::from(io::Error::new(io::ErrorKind::Other, format!("Failed to get file content:\nfile path: {}\ncommit hash: {}", file_path, commit_hash2)));
+                            return Err(JsError::from(err))
+                        }
+                    };
+                    let context2_output = get_command_output("git", &repo, &["cat-file", "-p", &format!("{}:{}", commit_hash2, file_path)]);
+                    match context2_output {
+                        Ok(context2_output) => {
+                            let stdout = String::from_utf8_lossy(&context2_output.stdout);
+                            context2 = stdout.to_string();
+                        }
+                        Err(e) => {
+                            let err = napiError::from(io::Error::new(io::ErrorKind::Other, format!("")));
+                            return Err(JsError::from(err))
+                        }
+                    };
+                    Ok(FileDiffContext {
+                        commit_hash1: commit_hash1.to_string(),
+                        commit_hash2: commit_hash2.to_string(),
+                        file_path: file_path.to_string(),
+                        addition,
+                        deletion,
+                        context1,
+                        context2,
+                        file_status: status,
+                    })
+                }
+                _ => {
+                    Ok(FileDiffContext {
+                        commit_hash1: commit_hash1.to_string(),
+                        commit_hash2: commit_hash2.to_string(),
+                        file_path: file_path.to_string(),
+                        addition: 0,
+                        deletion: 0,
+                        context1: String::from(""),
+                        context2: String::from(""),
+                        file_status: status,
+                    })
+                }
+            }
+        }
+        Err(e) => {
+            println!("{}", e);
+            let err = napiError::from(io::Error::new(io::ErrorKind::Other, e));
+            Err(JsError::from(err))
+        }
+    }
+}
 
 
 #[cfg(test)]
@@ -839,6 +1019,37 @@ mod tests {
                 println!("{:#?}", res);
             },
             Err(e) => {
+            }
+        }
+    }
+    #[test]
+    fn test_get_file_commit_status() {
+        let path = String::from(r"E:\workSpace\Rust\git-util-native");
+        let commit_hash1 = String::from("2ffc252bee9edcdfa27d0689e4c9f4f80f72b608^");
+        let commit_hash2 = String::from("2ffc252bee9edcdfa27d0689e4c9f4f80f72b608");
+        let file_path = String::from("src/structs.rs");
+        let res = get_file_commit_status(path.to_string(), commit_hash1.to_string(), file_path.to_string());
+        match res {
+            Ok(res) => {
+                println!("{:#?}", res);
+            },
+            Err(e) => {
+            }
+        }
+    }
+    #[test]
+    fn test_diff_file_context() {
+        let path = String::from(r"E:\workSpace\JavaScript\giter");
+        let commit_hash1 = String::from("fe2eff4^");
+        let commit_hash2 = String::from("fe2eff4");
+        let file_path = String::from("src/electron/workThreads/WorkPool.ts");
+        let res = diff_file_context(path.to_string(), commit_hash1.to_string(), commit_hash2.to_string(), file_path.to_string());
+        match res {
+            Ok(res) => {
+                println!("===============\n{:#?}\n=======================", res);
+            },
+            Err(e) => {
+                println!("ERROR");
             }
         }
     }
