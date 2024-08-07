@@ -1,6 +1,6 @@
 use napi_derive::napi;
 use core::hash::Hash;
-use std::{cmp::Eq, collections::{hash_map::RandomState, HashMap}, io, string};
+use std::{cmp::Eq, collections::{hash_map::RandomState, HashMap}, fmt::Display, io, string};
 
 #[napi(object)]
 #[derive(Clone, Eq, Debug)]
@@ -114,7 +114,7 @@ pub struct RepoFileInfo {
 }
 
 #[napi]
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum FileStatusType {
     Added,
     Deleted,
@@ -123,6 +123,20 @@ pub enum FileStatusType {
     Copied,
     Updated,
     Unknown
+}
+
+impl Display for FileStatusType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FileStatusType::Added => write!(f, "Added"),
+            FileStatusType::Deleted => write!(f, "Deleted"),
+            FileStatusType::Modified => write!(f, "Modified"),
+            FileStatusType::Renamed => write!(f, "Renamed"),
+            FileStatusType::Copied => write!(f, "Copied"),
+            FileStatusType::Updated => write!(f, "Updated"),
+            FileStatusType::Unknown => write!(f, "Unknown")
+        }
+    }
 }
 
 #[napi(object)]
@@ -149,9 +163,21 @@ pub struct FileDiffContext {
     pub commit_hash1: String,
     pub commit_hash2: String,
     pub file_path: String,
-    pub addition: i32,
-    pub deletion: i32,
+    pub change_stat: FileLineChangeStat,
     pub context1: String,
     pub context2: String,
     pub file_status: FileStatusType
+}
+
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct FileLineChangeStat {
+    pub addition: i32,
+    pub deletion: i32
+}
+
+impl Display for FileLineChangeStat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Addition: {}, Deletion: {}", self.addition, self.deletion)
+    }
 }

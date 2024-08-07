@@ -1,7 +1,8 @@
 #![deny(clippy::all)]
+use regex::Regex;
 use std::{collections::{HashMap, HashSet}, env::VarError, error::Error, fmt::format, io, os::windows::process::CommandExt, process::{Command, Output}};
 use napi::{Error as napiError, JsError};
-use structs::{Author, AuthorStatDailyContribute, Branch, BranchCreatedInfo, BranchStatDailyContribute, FileDiffContext, FileStatus, FileStatusReport, FileStatusType, Remote, RepoFileInfo, RepositoryFull, RepositorySimple, StatDailyContribute};
+use structs::{Author, AuthorStatDailyContribute, Branch, BranchCreatedInfo, BranchStatDailyContribute, FileDiffContext, FileLineChangeStat, FileStatus, FileStatusReport, FileStatusType, Remote, RepoFileInfo, RepositoryFull, RepositorySimple, StatDailyContribute};
 use util::get_basename;
 
 
@@ -505,6 +506,27 @@ fn get_repository_info_simple (path: String) -> Result<RepositorySimple, JsError
     })
 }
 
+fn log_shortstat_parse (status: &str) -> Result<(i32, i32, i32), String> {
+    println!("{}", status);
+    let re = Regex::new(r"(?<changes>\d+) files? changed(?:, (?<insertions>\d+) insertions?\(\+\))?(?:, (?<deletions>\d+) deletions?\(-\))?").unwrap();
+    let Some(captures) = re.captures(status) else {
+        return Err("No match found!".to_string())
+    };
+    let mut insertions = 0;
+    let mut changes = 0;
+    let mut deletions = 0;
+    if let Some(changes_str) = captures.name("changes") {
+        changes = changes_str.as_str().parse::<i32>().unwrap();
+    }
+    if let Some(insertions_str) = captures.name("insertions") {
+        insertions = insertions_str.as_str().parse::<i32>().unwrap();
+    }
+    if let Some(deletions_str) = captures.name("deletions") {
+        deletions = deletions_str.as_str().parse::<i32>().unwrap();
+    }
+    Ok((changes, insertions, deletions))
+}
+
 #[napi]
 /**
  * Get the statistic of daily contribute in a branch
@@ -532,13 +554,12 @@ fn get_contribute_stat (path: String, branch: String) -> Result<BranchStatDailyC
                 let lines = commit.trim_end_matches("\n").split("\n").collect::<Vec<_>>();
                 if lines.len() != 2 {continue;}
                 let auth_info = lines[0].split(PARAM_INTERVAL).collect::<Vec<_>>();
-                let change_info = lines[1].trim().split(", ").collect::<Vec<_>>();
+                // parse shortstat
+                let Ok ((changes, insertions, deletions)) = log_shortstat_parse(lines[1]) else {
+                    let err = napiError::from(io::Error::new(io::ErrorKind::Other, format!("")));
+                    return Err(JsError::from(err))
+                };
                 // println!("======================\n{}\n{}\n============================", auth_info.join("|"), change_info.join("|"));
-                // the first change is number of change files, if has insert , 
-                // the second is number of insertions, and the third is number of deletions
-                // if not insert, that the second is number of deletions
-                let change1_info = change_info[0].split(" ").collect::<Vec<_>>();
-                let change2_info = change_info[1].split(" ").collect::<Vec<_>>();
                 let name = auth_info[0].to_string();
                 let email = auth_info[1].to_string();
                 let date = auth_info[2].to_string();
@@ -548,31 +569,16 @@ fn get_contribute_stat (path: String, branch: String) -> Result<BranchStatDailyC
                     author.stat.commit_count += 1;
                     let len = author.stat.data_list.len();
                     // if one day has multiple commits
-                    if author.stat.data_list[len - 1] == date { 
-                        author.stat.change_files[len - 1] = change1_info[0].parse::<i32>().unwrap() + author.stat.change_files[len - 1];
-                        if change2_info[1].starts_with("insertion") {
-                            author.stat.insertion[len - 1] = change2_info[0].parse::<i32>().unwrap() + author.stat.insertion[len - 1];
-                        }
-                        else {
-                            author.stat.deletions[len - 1] = change2_info[0].parse::<i32>().unwrap() + author.stat.deletions[len - 1];
-                        }
-                        if change_info.len() > 2 {
-                            author.stat.deletions[len - 1] = change2_info[0].parse::<i32>().unwrap() + author.stat.deletions[len - 1];
-                        }
+                    if author.stat.data_list[len - 1] == date {
+                        author.stat.change_files[len - 1] = changes;
+                        author.stat.insertion[len - 1] = insertions;
+                        author.stat.deletions[len - 1] = deletions;
                     } else {
                         // new day and first commit
                         author.stat.data_list.push(date.to_string());
-                        if change2_info[1].starts_with("insertion") {
-                            author.stat.insertion.push(change2_info[0].parse::<i32>().unwrap());
-                            if change_info.len() == 2 { total_stat.deletions.push(0); }
-                        }
-                        else {
-                            author.stat.deletions.push(change2_info[0].parse::<i32>().unwrap());
-                            author.stat.insertion.push(0);
-                        }
-                        if change_info.len() > 2 {
-                            author.stat.deletions.push(change2_info[0].parse::<i32>().unwrap());
-                        }
+                        author.stat.insertion.push(insertions);
+                        author.stat.deletions.push(deletions);
+                        author.stat.change_files.push(changes);
                     }
                 } else {
                     // new author
@@ -590,49 +596,25 @@ fn get_contribute_stat (path: String, branch: String) -> Result<BranchStatDailyC
                         }
                     };
                     author.stat.data_list.push(date.to_string());
-                    author.stat.change_files.push(change1_info[0].parse::<i32>().unwrap());
-                    if change2_info[1].starts_with("insertion") {
-                        author.stat.insertion.push(change2_info[0].parse::<i32>().unwrap());
-                        if change_info.len() == 2 { author.stat.deletions.push(0); }
-                    }
-                    else {
-                        author.stat.deletions.push(change2_info[0].parse::<i32>().unwrap());
-                        author.stat.insertion.push(0);
-                    }
-                    if change_info.len() > 2 {
-                        author.stat.deletions.push(change2_info[0].parse::<i32>().unwrap());
-                    }
+                    author.stat.insertion.push(insertions);
+                    author.stat.deletions.push(deletions);
+                    author.stat.change_files.push(changes);
                     authors_stat.insert(name, author);
                 }
                 // total stat
                 total_stat.commit_count += 1;
                 let len = total_stat.data_list.len();
                 if len > 0 && total_stat.data_list[len - 1] == date {
-                    total_stat.change_files[len - 1] = change1_info[0].parse::<i32>().unwrap() + total_stat.change_files[len - 1];
-                    if change2_info[1].starts_with("insertion") {
-                        total_stat.insertion[len - 1] = change2_info[0].parse::<i32>().unwrap() + total_stat.insertion[len - 1];
-                    }
-                    else {
-                        total_stat.deletions[len - 1] = change2_info[0].parse::<i32>().unwrap() + total_stat.deletions[len - 1];
-                    }
-                    if change_info.len() > 2 {
-                        total_stat.deletions[len - 1] = change2_info[0].parse::<i32>().unwrap() + total_stat.deletions[len - 1];
-                    }
+                    total_stat.change_files[len - 1] = changes;
+                    total_stat.insertion[len - 1] = insertions;
+                    total_stat.deletions[len - 1] = deletions;
                 } else {
                     // new day and first commit
                     total_stat.data_list.push(date.to_string());
-                    total_stat.change_files.push(change1_info[0].parse::<i32>().unwrap());
-                    if change2_info[1].starts_with("insertion") {
-                        total_stat.insertion.push(change2_info[0].parse::<i32>().unwrap());
-                        if change_info.len() == 2 { total_stat.deletions.push(0); }
-                    }
-                    else {
-                        total_stat.deletions.push(change2_info[0].parse::<i32>().unwrap());
-                        total_stat.insertion.push(0);
-                    }
-                    if change_info.len() > 2 {
-                        total_stat.deletions.push(change2_info[0].parse::<i32>().unwrap());
-                    }
+                    total_stat.data_list.push(date.to_string());
+                    total_stat.insertion.push(insertions);
+                    total_stat.deletions.push(deletions);
+                    total_stat.change_files.push(changes);
                     // println!("{} {} {} {} {}",change_info.len(),  total_stat.data_list.len(), total_stat.insertion.len(), total_stat.deletions.len(), total_stat.change_files.len())
                 }
             }
@@ -815,7 +797,22 @@ fn get_commit_file_status (path: String, hash: String) -> Result<FileStatusRepor
     }
 }
 
-fn get_file_commit_status(path: String, commit_hash1: String, file_path: String) -> Result<(FileStatusType, String), String> {
+fn parse_file_status (status_flag: &str) -> FileStatusType {
+    match status_flag {
+        "A" => FileStatusType::Added,
+        "D" => FileStatusType::Deleted,
+        "M" => FileStatusType::Modified,
+        "R" => FileStatusType::Renamed,
+        "C" => FileStatusType::Copied,
+        "U" => FileStatusType::Updated,
+        _ =>FileStatusType::Unknown,
+    }
+}
+
+/**
+ * Get the file list of a repository
+ */
+fn get_file_between_commit_status(path: String, commit_hash1: String, file_path: String) -> Result<(FileStatusType, String), String> {
     let output: Result<Output, io::Error> = get_command_output("git", &path, &["show", &commit_hash1, "--name-status",  "--format=", "--", &file_path]);
     match output {
         Ok(output) => {
@@ -824,19 +821,13 @@ fn get_file_commit_status(path: String, commit_hash1: String, file_path: String)
             if lines.len() > 0 {
                 let status_flag = lines[0][0..1].to_string();
                 let mut message = "".to_string();
-                let status = match status_flag.as_str() {
-                    "A" => FileStatusType::Added,
-                    "D" => FileStatusType::Deleted,
-                    "M" => FileStatusType::Modified,
-                    "R" => {
+                let file_status = parse_file_status(&status_flag);
+                if file_status == FileStatusType::Renamed {
+                    if lines.len() > 1 {
                         message = lines[1].to_string() + " => " + lines[2];
-                        FileStatusType::Renamed
-                    },
-                    "C" => FileStatusType::Copied,
-                    "U" => FileStatusType::Updated,
-                    _ => FileStatusType::Unknown,
-                };
-                Ok((status, message))
+                    }
+                }
+                Ok((file_status, message))
             }
             else {
                 Err("No status found".to_string())
@@ -844,6 +835,66 @@ fn get_file_commit_status(path: String, commit_hash1: String, file_path: String)
         }
         Err(e) => {
             Err(e.source().unwrap().to_string())
+        }
+    }
+}
+
+#[napi]
+fn get_file_change_stat_between_commit(path: String, commit_hash1: String, commit_hash2: String, file_path: String) -> Result<FileLineChangeStat, JsError> {
+    let commit_range = format!("{}...{}", commit_hash1, commit_hash2);
+    let output = get_command_output("git", &path, &["diff", &commit_range , "--shortstat", "--", &file_path]);
+    match output {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            match log_shortstat_parse(&stdout) {
+                Ok((_, addition, deletion)) => {
+                    Ok(FileLineChangeStat {
+                        addition,
+                        deletion
+                    })
+                }
+                Err(_) => {
+                    let err = napiError::from(io::Error::new(io::ErrorKind::Other, format!("Failed to get file change status:\nRepository path: {}\ncommit hash1: {}\ncommit hash2: {}", path, commit_hash1, commit_hash2)));
+                    Err(JsError::from(err))
+                }
+            }
+        }
+        Err(e) => {
+            let err = napiError::from(e);
+            return Err(JsError::from(err))
+        }
+    }
+}
+
+#[napi]
+fn get_files_status_between_commit (path: String, commit_hash1: String, commit_hash2: String) -> Result<Vec<FileStatus>, JsError> {
+    let output = get_command_output("git", &path, &["diff", "--name-status", &commit_hash1, &commit_hash2]);
+    let mut file_status = Vec::<FileStatus>::new();
+    match output {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let lines = stdout.trim().split("\n").collect::<Vec<&str>>();
+            for line in lines.iter() {
+                let params = line.split_ascii_whitespace().collect::<Vec<&str>>();
+                let flag = params[0][0..1].to_string();
+                let file_staus = parse_file_status(&flag);
+                let mut message = "".to_string();
+                if file_staus == FileStatusType::Renamed {
+                    if params.len() > 2 {
+                        message = params[1].to_string() + " => " + params[2];
+                    }
+                }
+                file_status.push(FileStatus {
+                    path: params[1].to_string(),
+                    status: file_staus,
+                    message,
+                });
+            }
+            Ok(file_status)
+        }
+        Err(e) => {
+            let err = napiError::from(io::Error::new(io::ErrorKind::Other, format!("Failed to get commit status:\nRepository path: {}\ncommit hash1: {}\ncommit hash2: {}", path, commit_hash1, commit_hash2)));
+            return Err(JsError::from(err))
         }
     }
 }
@@ -861,7 +912,7 @@ fn diff_file_context (repo: String, commit_hash1: String, commit_hash2: String, 
     // 如果是文件中的修改，则调用 git diff --shortstat hash1 hash2 -- file_path 来记录文件中修改的数量，二进制文件不需要做，只需要提示为二进制文件即可
     //      如果是重命名、删除的话，就不用做，提供说明
     // 如果是文件中修改的话，使用 git cat-file -p hash:path 来获取文件内容
-    let commit_status = get_file_commit_status(repo.to_string(), commit_hash2.to_string(), file_path.to_string());
+    let commit_status = get_file_between_commit_status(repo.to_string(), commit_hash2.to_string(), file_path.to_string());
     match commit_status {
         Ok(commit_status) => {
             let (status, message) = commit_status;
@@ -879,8 +930,10 @@ fn diff_file_context (repo: String, commit_hash1: String, commit_hash2: String, 
                                 commit_hash1: commit_hash1.to_string(),
                                 commit_hash2: commit_hash2.to_string(),
                                 file_path: file_path.to_string(),
-                                addition: stdout.trim().lines().count() as i32,
-                                deletion: 0,
+                                change_stat: FileLineChangeStat {
+                                    addition: stdout.trim().lines().count() as i32,
+                                    deletion: 0,
+                                },
                                 context1,
                                 context2,
                                 file_status: status,
@@ -903,8 +956,10 @@ fn diff_file_context (repo: String, commit_hash1: String, commit_hash2: String, 
                                 commit_hash1: commit_hash1.to_string(),
                                 commit_hash2: commit_hash2.to_string(),
                                 file_path: file_path.to_string(),
-                                addition: 0,
-                                deletion: stdout.trim().lines().count() as i32,
+                                change_stat: FileLineChangeStat {
+                                    addition: 0,
+                                    deletion: stdout.trim().lines().count() as i32,
+                                },
                                 context1,
                                 context2,
                                 file_status: status,
@@ -975,8 +1030,10 @@ fn diff_file_context (repo: String, commit_hash1: String, commit_hash2: String, 
                         commit_hash1: commit_hash1.to_string(),
                         commit_hash2: commit_hash2.to_string(),
                         file_path: file_path.to_string(),
-                        addition,
-                        deletion,
+                        change_stat: FileLineChangeStat {
+                            addition,
+                            deletion,
+                        },
                         context1,
                         context2,
                         file_status: status,
@@ -987,8 +1044,10 @@ fn diff_file_context (repo: String, commit_hash1: String, commit_hash2: String, 
                         commit_hash1: commit_hash1.to_string(),
                         commit_hash2: commit_hash2.to_string(),
                         file_path: file_path.to_string(),
-                        addition: 0,
-                        deletion: 0,
+                        change_stat: FileLineChangeStat {
+                            addition: 0,
+                            deletion: 0,
+                        },
                         context1: String::from(""),
                         context2: String::from(""),
                         file_status: status,
@@ -1000,6 +1059,170 @@ fn diff_file_context (repo: String, commit_hash1: String, commit_hash2: String, 
             println!("{}", e);
             let err = napiError::from(io::Error::new(io::ErrorKind::Other, e));
             Err(JsError::from(err))
+        }
+    }
+}
+
+#[napi]
+/**
+ * get file content in a commit
+ */
+fn get_file_content (repo: String, commit_hash: String, file_path: String) -> Result<String, JsError> {
+    let output = get_command_output("git", &repo, &["cat-file", "-p", &format!("{}:{}", commit_hash, file_path)]);
+    match output {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            Ok(stdout.to_string())
+        }
+        Err(e) => {
+            let err = napiError::from(e);
+            Err(JsError::from(err))
+        }
+    }
+}
+
+fn is_binary(content: &str) -> bool {
+    // 判断前8000个字节中是否包含0
+    for c in content.bytes().take(8000) {
+        if c == 0 {
+            return true;
+        }
+    }
+    return false;
+}
+
+#[napi]
+fn get_files_diff_context (repo: String, commit_hash1: String, commit_hash2: String) -> Result<Vec<FileDiffContext>, JsError> {
+    let mut result = Vec::new();
+    let files_status = get_files_status_between_commit(repo.to_string(), commit_hash1.to_string(), commit_hash2.to_string());
+    match files_status {
+        Ok(files_status) => {
+            for file_status in files_status.iter() {
+                // println!("{} {}", file_status.path, file_status.status);
+                let mut file_content1 = String::from("");
+                let mut file_content2 = String::from("");
+                let mut addition = 0;
+                let mut deletion = 0;
+                match file_status.status {
+                    FileStatusType::Added => {
+                        let content = get_file_content(repo.to_string(), commit_hash2.to_string(), file_status.path.to_string());
+                        match content {
+                            Ok(content) => {
+                                if is_binary(&content) {
+                                    file_content1 = String::from("Binary file");
+                                    file_content2 = String::from("Binary file");
+                                } else {
+                                    file_content2 = content;
+                                    addition = file_content2.lines().count() as i32;
+                                }
+                            }
+                            Err(_) => {
+                                let err = napiError::from(io::Error::new(io::ErrorKind::Other, format!("Failed to get file content:\nfile path: {}\ncommit hash: {}", file_status.path, commit_hash2)));
+                                return Err(JsError::from(err))
+                            }
+                        }
+                    }
+                    FileStatusType::Deleted => {
+                        let content = get_file_content(repo.to_string(), commit_hash1.to_string(), file_status.path.to_string());
+                        match content {
+                            Ok(content) => {
+                                if is_binary(&content) {
+                                    file_content1 = String::from("Binary file");
+                                } else {
+                                    file_content1 = content;
+                                    deletion = file_content1.lines().count() as i32;
+                                }
+                            }
+                            Err(_) => {
+                                let err = napiError::from(io::Error::new(io::ErrorKind::Other, format!("Failed to get file content:\nfile path: {}\ncommit hash: {}", file_status.path, commit_hash2)));
+                                return Err(JsError::from(err))
+                            }
+                        }
+                        file_content2 = String::from("File deleted");
+                    }
+                    FileStatusType::Modified => {
+                        let content1 = get_file_content(repo.to_string(), commit_hash1.to_string(), file_status.path.to_string());
+                        let content2 = get_file_content(repo.to_string(), commit_hash2.to_string(), file_status.path.to_string());
+                        let file_change_stat = get_file_change_stat_between_commit(repo.to_string(), commit_hash1.to_string(), commit_hash2.to_string(), file_status.path.to_string());
+                        match (content1, content2) {
+                            (Ok(content1), Ok(content2)) => {
+                                if is_binary(&content1) && is_binary(&content2) {
+                                    file_content1 = String::from("Binary file");
+                                    file_content2 = String::from("Binary file");
+                                } else if is_binary(&content1) {
+                                    file_content1 = String::from("Binary file");
+                                    file_content2 = content2;
+                                }else if is_binary(&content2) {
+                                    file_content1 = content1;
+                                    file_content2 = String::from("Binary file");
+                                } else {
+                                    file_content1 = content1;
+                                    file_content2 = content2;
+                                }
+                            },
+                            (_, _) => {
+                                let err = napiError::from(io::Error::new(io::ErrorKind::Other, format!("Failed to get file content:\nfile path: {}\ncommit hash: {}", file_status.path, commit_hash2)));
+                                return Err(JsError::from(err))
+                            }
+                        }
+                        match file_change_stat {
+                            Ok(file_change_stat) => {
+                                addition = file_change_stat.addition;
+                                deletion = file_change_stat.deletion;
+                            },
+                            Err(e) => {
+                                return Err(e)
+                            }
+                        }
+                    }
+                    FileStatusType::Renamed => {
+                        let reg = Regex::new(r"\s*=>\s*").unwrap();
+                        let names = reg.split(&file_status.message).collect::<Vec<&str>>();
+                        let name1 = names[0];
+                        let name2 = names[1];
+                        let content1 = get_file_content(repo.to_string(), commit_hash1.to_string(), name1.to_string());
+                        let content2 = get_file_content(repo.to_string(), commit_hash2.to_string(), name2.to_string());
+                        match (content1, content2) {
+                            (Ok(content1), Ok(content2)) => {
+                                if is_binary(&content1) && is_binary(&content2) {
+                                    file_content1 = String::from("Binary file");
+                                    file_content2 = String::from("Binary file");
+                                } else if is_binary(&content1) {
+                                    file_content1 = String::from("Binary file");
+                                    file_content2 = content2;
+                                }else if is_binary(&content2) {
+                                    file_content1 = content1;
+                                    file_content2 = String::from("Binary file");
+                                } else {
+                                    file_content1 = content1;
+                                    file_content2 = content2;
+                                }
+                            }
+                            (_, _) => {
+                                let err = napiError::from(io::Error::new(io::ErrorKind::Other, format!("Failed to get file content:\nfile path: {}\ncommit hash: {}", file_status.path, commit_hash2)));
+                                return Err(JsError::from(err))
+                            }
+                        }
+                    }
+                    _ => {}
+                };
+                result.push(FileDiffContext {
+                    commit_hash1: commit_hash1.to_string(),
+                    commit_hash2: commit_hash2.to_string(),
+                    file_path: file_status.path.to_string(),
+                    change_stat: FileLineChangeStat {
+                        addition: addition,
+                        deletion: deletion
+                    },
+                    context1: file_content1,
+                    context2: file_content2,
+                    file_status: file_status.status
+                })
+            }
+            Ok(result)
+        }
+        Err(e) => {
+            return Err(e)
         }
     }
 }
@@ -1028,7 +1251,7 @@ mod tests {
         let commit_hash1 = String::from("2ffc252bee9edcdfa27d0689e4c9f4f80f72b608^");
         let commit_hash2 = String::from("2ffc252bee9edcdfa27d0689e4c9f4f80f72b608");
         let file_path = String::from("src/structs.rs");
-        let res = get_file_commit_status(path.to_string(), commit_hash1.to_string(), file_path.to_string());
+        let res = get_file_between_commit_status(path.to_string(), commit_hash1.to_string(), file_path.to_string());
         match res {
             Ok(res) => {
                 println!("{:#?}", res);
@@ -1047,6 +1270,43 @@ mod tests {
         match res {
             Ok(res) => {
                 println!("===============\n{:#?}\n=======================", res);
+            },
+            Err(e) => {
+                println!("ERROR");
+            }
+        }
+    }
+    #[test]
+    fn test_get_file_content() {
+        let path = String::from(r"E:\workSpace\JavaScript\giter");
+        let commit_hash = String::from("fe2eff4");
+        let file_path = String::from("src/renderer/views/setting/index.vue");
+        let res = get_file_content(path.to_string(), commit_hash.to_string(), file_path.to_string());
+        match res {
+            Ok(res) => {
+                println!("===============\n{:#?}\n=======================", res);
+            },
+            Err(e) => {
+                println!("ERROR");
+            }
+        }
+    }
+
+    #[test]
+    fn test_get_files_diff_context() {
+        let path = String::from(r"E:\workSpace\JavaScript\giter");
+        let commit1_hash = String::from("fe2eff4^");
+        let commit2_hash = String::from("fe2eff4");
+        let res = get_files_diff_context(path.to_string(), commit1_hash.to_string(), commit2_hash.to_string());
+        match res {
+            Ok(res) => {
+                // println!("===============\n{:#?}\n== =====================", res);
+                for file_diff in res {
+                    println!("====================================");
+                    println!("{}", file_diff.file_path);
+                    println!("{}", file_diff.file_status);
+                    println!("{}", file_diff.change_stat);
+                }
             },
             Err(e) => {
                 println!("ERROR");
