@@ -507,7 +507,6 @@ fn get_repository_info_simple (path: String) -> Result<RepositorySimple, JsError
 }
 
 fn log_shortstat_parse (status: &str) -> Result<(i32, i32, i32), String> {
-    println!("{}", status);
     let re = Regex::new(r"(?<changes>\d+) files? changed(?:, (?<insertions>\d+) insertions?\(\+\))?(?:, (?<deletions>\d+) deletions?\(-\))?").unwrap();
     let Some(captures) = re.captures(status) else {
         return Err("No match found!".to_string())
@@ -1230,6 +1229,10 @@ fn get_files_diff_context (repo: String, commit_hash1: String, commit_hash2: Str
 
 #[cfg(test)]
 mod tests {
+    use core::time;
+
+    use util::get_current_time;
+
     use super::*;
 
     #[test]
@@ -1297,9 +1300,12 @@ mod tests {
         let path = String::from(r"E:\workSpace\JavaScript\giter");
         let commit1_hash = String::from("fe2eff4^");
         let commit2_hash = String::from("fe2eff4");
+        let t1 = get_current_time();
         let res = get_files_diff_context(path.to_string(), commit1_hash.to_string(), commit2_hash.to_string());
         match res {
             Ok(res) => {
+                let t2 = get_current_time();
+                println!("time: {}", t2 - t1);
                 // println!("===============\n{:#?}\n== =====================", res);
                 for file_diff in res {
                     println!("====================================");
