@@ -1091,6 +1091,44 @@ fn is_binary(content: &str) -> bool {
 }
 
 #[napi]
+/**
+ * get difference file diff between two commits
+ * @param repo repo path
+ * @param commit_hash1 commit hash1
+ * @param commit_hash2 commit hash2
+ * @param file_path1 file path in commit1
+ * @param file_path2 file path in commit2
+ * @returns FileDiffContext
+ */
+fn get_diff_file_status_between_commit(repo: String, commit_hash1: String, commit_hash2: String, file_path1: String, file_path2: String)-> Result<FileLineChangeStat, JsError> {
+    let commit_range = format!("{}...{}", commit_hash1, commit_hash2);
+    let output = get_command_output("git", &repo, &["diff", &commit_range, "--shortstat",  "--", &file_path1, &file_path2]);
+    match output {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            match log_shortstat_parse(&stdout) {
+                Ok((_, insertation, deletion)) => {
+                    Ok(FileLineChangeStat {
+                        addition: insertation,
+                        deletion: deletion,
+                    })
+                }
+                Err(e) => {
+                    let err = napiError::from(io::Error::new(io::ErrorKind::Other, "File to parse git diff shortstat"));
+                    Err(JsError::from(err))
+                }
+            }
+        }
+        Err(e) => {
+            let err = napiError::from(e);
+            Err(JsError::from(err))
+        }
+    }
+
+
+}
+
+#[napi]
 fn get_files_diff_context (repo: String, commit_hash1: String, commit_hash2: String) -> Result<Vec<FileDiffContext>, JsError> {
     let mut result = Vec::new();
     let files_status = get_files_status_between_commit(repo.to_string(), commit_hash1.to_string(), commit_hash2.to_string());
@@ -1181,6 +1219,7 @@ fn get_files_diff_context (repo: String, commit_hash1: String, commit_hash2: Str
                         let name2 = names[1];
                         let content1 = get_file_content(repo.to_string(), commit_hash1.to_string(), name1.to_string());
                         let content2 = get_file_content(repo.to_string(), commit_hash2.to_string(), name2.to_string());
+                        let file_change_stat = get_diff_file_status_between_commit(repo.to_string(), commit_hash1.to_string(), commit_hash2.to_string(), name1.to_string(), name2.to_string());
                         match (content1, content2) {
                             (Ok(content1), Ok(content2)) => {
                                 if is_binary(&content1) && is_binary(&content2) {
@@ -1200,6 +1239,15 @@ fn get_files_diff_context (repo: String, commit_hash1: String, commit_hash2: Str
                             (_, _) => {
                                 let err = napiError::from(io::Error::new(io::ErrorKind::Other, format!("Failed to get file content:\nfile path: {}\ncommit hash: {}", file_status.path, commit_hash2)));
                                 return Err(JsError::from(err))
+                            }
+                        }
+                        match file_change_stat {
+                            Ok(file_change_stat) => {
+                                addition = file_change_stat.addition;
+                                deletion = file_change_stat.deletion;
+                            },
+                            Err(e) => {
+                                return Err(e)
                             }
                         }
                     }
@@ -1297,7 +1345,7 @@ mod tests {
 
     #[test]
     fn test_get_files_diff_context() {
-        let path = String::from(r"E:\workSpace\JavaScript\giter");
+        let path = String::from(r"D:\work_project\JavaScript\giter");
         let commit1_hash = String::from("fe2eff4^");
         let commit2_hash = String::from("fe2eff4");
         let t1 = get_current_time();
