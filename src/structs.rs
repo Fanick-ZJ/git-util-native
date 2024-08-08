@@ -42,7 +42,7 @@ pub struct Branch {
 }
 
 #[napi(object)]
-#[derive(Clone)]
+#[derive(Clone ,Debug)]
 pub struct Remote {
     pub name: String,
     pub url: String,

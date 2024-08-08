@@ -50,7 +50,7 @@ fn is_git_repository(path: String) -> bool {
     match output {
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
-            stdout == "true"
+            stdout.trim() == "true"
         }
         Err(_) => false,
     }
@@ -97,6 +97,39 @@ fn is_commited (path: String) -> Result<bool, JsError> {
           let err = napiError::from(e);
           Err(JsError::from(err))
        }
+    }
+}
+
+#[napi]
+/**
+ * Check if a branch has been pushed
+ * @param path path to the repository
+ * @param branch branch name
+ */
+fn is_pushed (path: String, branch: String) -> Result<bool, JsError> {
+    let remote_output = get_branch_in_remote(path.to_string(), branch.to_string());
+    match remote_output {
+        Ok(remote) => {
+            if remote == "" {
+                return Ok(false);
+            }
+            else {
+                let has_pushed = get_command_output("git", &path, &["cherry", &format!("{}/{}", remote, branch)]);
+                match has_pushed {
+                    Ok(output) => {
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        Ok(!stdout.trim().is_empty())
+                    }
+                    Err(e) => {
+                        let err = napiError::from(e);
+                        Err(JsError::from(err))
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            Err(e)
+        }
     }
 }
 
@@ -284,20 +317,40 @@ fn get_format_key_map() -> HashMap<String, String> {
  * |%b    | body | body |
  * |%B    | body, without trailing slash | bodyNoTrailingSlash |
  * |%N    | commit notes | notes |
+ * 
+ * @param path path to the repository
+ * @param branch branch name
+ * @param placeholders placeholders to get the commit log information
+ * @param start_commit start commit hash, it can be ""
+ * @param end_commit end commit hash, it can be ""
+ * @return commit log
  */
-fn get_commit_log_format(path: String, branch: String, placeholders: Vec<String>) -> Result<Vec<HashMap<String, String>>, JsError> {
+fn get_commit_log_format(path: String, placeholders: Vec<String>, start_commit: String, end_commit: String) -> Result<Vec<HashMap<String, String>>, JsError> {
     let mut format = String::from("--pretty=format:");
+    let commit_range = if start_commit.is_empty() && end_commit.is_empty(){
+        String::from("HEAD")
+    } else if start_commit.is_empty() && !end_commit.is_empty(){
+        format!("{}", end_commit)
+    } else if !start_commit.is_empty() && end_commit.is_empty(){
+        format!("{}^..HEAD", start_commit)
+    } else {
+        format!("{}^..{}", start_commit, end_commit)
+    };
+    println!("{}", commit_range);
     for key in placeholders.iter(){
         format = format + &key + PARAM_INTERVAL;
     }
     format = format.trim_end_matches(PARAM_INTERVAL).to_string() + COMMIT_INETRVAL;
     let key_map = get_format_key_map();
-    let output = get_command_output("git", &path, &["log", &branch, &format]);
+    let output = get_command_output("git", &path, &["log", &format, &commit_range]);
     let mut res = Vec::new();
     match output{
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.trim().trim_end_matches(&COMMIT_INETRVAL).split(&COMMIT_INETRVAL) {
+                if line.is_empty(){
+                    continue;
+                }
                 let datas = line.split(PARAM_INTERVAL).collect::<Vec<_>>();
                 let mut map = HashMap::<String, String>::new();
                 for i in 0..placeholders.len(){
@@ -1096,6 +1149,21 @@ fn get_file_content (repo: String, commit_hash: String, file_path: String) -> Re
     }
 }
 
+#[napi]
+fn get_file_by_hash(repo: String, file_hash: String) -> Result<String, JsError> {
+    let output = get_command_output("git", &repo, &["cat-file", "-p", &file_hash]);
+    match output {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            Ok(stdout.to_string())
+        }
+        Err(e) => {
+            let err = napiError::from(e);
+            Err(JsError::from(err))
+        }
+    }
+}
+
 fn is_binary(content: &str) -> bool {
     // 判断前8000个字节中是否包含0
     for c in content.bytes().take(8000) {
@@ -1203,7 +1271,7 @@ fn get_files_diff_context (repo: String, commit_hash1: String, commit_hash2: Str
                     FileStatusType::Modified => {
                         let content1 = get_file_content(repo.to_string(), commit_hash1.to_string(), file_status.path.to_string());
                         let content2 = get_file_content(repo.to_string(), commit_hash2.to_string(), file_status.path.to_string());
-                        let file_change_stat = get_file_change_stat_between_commit(repo.to_string(), commit_hash1.to_string(), commit_hash2.to_string(), file_status.path.to_string());
+                        let file_change_stat = get_file_modify_stat_between_commit(repo.to_string(), commit_hash1.to_string(), commit_hash2.to_string(), file_status.path.to_string());
                         match (content1, content2) {
                             (Ok(content1), Ok(content2)) => {
                                 if is_binary(&content1) && is_binary(&content2) {
@@ -1368,7 +1436,7 @@ mod tests {
 
     #[test]
     fn test_get_files_diff_context() {
-        let path = String::from(r"D:\work_project\JavaScript\giter");
+        let path = String::from(r"E:\workSpace\JavaScript\giter");
         let commit1_hash = String::from("fe2eff4^");
         let commit2_hash = String::from("fe2eff4");
         let t1 = get_current_time();
@@ -1384,6 +1452,69 @@ mod tests {
                     println!("{}", file_diff.file_status);
                     println!("{}", file_diff.change_stat);
                 }
+            },
+            Err(e) => {
+                println!("ERROR");
+            }
+        }
+    }
+
+    #[test]
+    fn test_is_repository() {
+        let path = String::from(r"E:\workSpace\JavaScript\giter");
+        let res = is_git_repository(path.to_string());
+        println!("{}", res);
+    }
+
+    #[test]
+    fn test_get_remote() {
+        let path = String::from(r"E:\workSpace\JavaScript\giter");
+        let res = get_remote(path.to_string());
+        match res {
+            Ok(res) => {
+                println!("{:#?}", res);
+            },
+            Err(e) => {
+                println!("ERROR");
+            }
+        }
+    }
+
+    #[test]
+    fn test_get_tag() {
+        let path = String::from(r"E:\workSpace\JavaScript\giter");
+        let res = get_tags(path.to_string());
+        match res {
+            Ok(res) => {
+                println!("{:#?}", res);
+            },
+            Err(e) => {
+                println!("ERROR");
+            }
+        }
+    }
+    
+    #[test]
+    fn test_get_file_by_hash() {
+        let path = String::from(r"E:\workSpace\JavaScript\giter");
+        let res = get_file_by_hash(path.to_string(), "a54c9f80a58e9c23a41aee057f2d14d79cefbe6c".to_string());
+        match res {
+            Ok(res) => {
+                println!("{:#?}", res);
+            },
+            Err(e) => {
+                println!("ERROR");
+            }
+        }
+    }
+
+    #[test]
+    fn test_get_commit_title() {
+        let path = String::from(r"E:\workSpace\JavaScript\giter");
+        let res = get_commit_log_format(path.to_string(), vec!["%s".to_string(), "%h".to_string()], "274b861".to_string(), "b4864c1".to_string());
+        match res {
+            Ok(res) => {
+                println!("{:#?}", res);
             },
             Err(e) => {
                 println!("ERROR");
