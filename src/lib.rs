@@ -839,7 +839,14 @@ fn get_file_between_commit_status(path: String, commit_hash1: String, file_path:
 }
 
 #[napi]
-fn get_file_change_stat_between_commit(path: String, commit_hash1: String, commit_hash2: String, file_path: String) -> Result<FileLineChangeStat, JsError> {
+/**
+ * Get the file change statistic between two commits
+ * @param path The path of the repository
+ * @param commit_hash1 The commit hash of the first commit
+ * @param commit_hash2 The commit hash of the second commit
+ * @param file_path The path of the file
+ */
+fn get_file_modify_stat_between_commit(path: String, commit_hash1: String, commit_hash2: String, file_path: String) -> Result<FileLineChangeStat, JsError> {
     let commit_range = format!("{}...{}", commit_hash1, commit_hash2);
     let output = get_command_output("git", &path, &["diff", &commit_range , "--shortstat", "--", &file_path]);
     match output {
@@ -866,6 +873,12 @@ fn get_file_change_stat_between_commit(path: String, commit_hash1: String, commi
 }
 
 #[napi]
+/**
+ * Get the files change status between two commits
+ * @param path The path of the repository
+ * @param commit_hash1 The commit hash of the first commit
+ * @param commit_hash2 The commit hash of the second commit
+ */
 fn get_files_status_between_commit (path: String, commit_hash1: String, commit_hash2: String) -> Result<Vec<FileStatus>, JsError> {
     let output = get_command_output("git", &path, &["diff", "--name-status", &commit_hash1, &commit_hash2]);
     let mut file_status = Vec::<FileStatus>::new();
@@ -1065,6 +1078,9 @@ fn diff_file_context (repo: String, commit_hash1: String, commit_hash2: String, 
 #[napi]
 /**
  * get file content in a commit
+ * @param repo repo path
+ * @param commit_hash commit hash
+ * @param file_path file path
  */
 fn get_file_content (repo: String, commit_hash: String, file_path: String) -> Result<String, JsError> {
     let output = get_command_output("git", &repo, &["cat-file", "-p", &format!("{}:{}", commit_hash, file_path)]);
@@ -1092,7 +1108,7 @@ fn is_binary(content: &str) -> bool {
 
 #[napi]
 /**
- * get difference file diff between two commits
+ * get difference file diff statistic between two commits
  * @param repo repo path
  * @param commit_hash1 commit hash1
  * @param commit_hash2 commit hash2
@@ -1100,7 +1116,7 @@ fn is_binary(content: &str) -> bool {
  * @param file_path2 file path in commit2
  * @returns FileDiffContext
  */
-fn get_diff_file_status_between_commit(repo: String, commit_hash1: String, commit_hash2: String, file_path1: String, file_path2: String)-> Result<FileLineChangeStat, JsError> {
+fn get_diff_file_stat_between_commit(repo: String, commit_hash1: String, commit_hash2: String, file_path1: String, file_path2: String)-> Result<FileLineChangeStat, JsError> {
     let commit_range = format!("{}...{}", commit_hash1, commit_hash2);
     let output = get_command_output("git", &repo, &["diff", &commit_range, "--shortstat",  "--", &file_path1, &file_path2]);
     match output {
@@ -1129,6 +1145,13 @@ fn get_diff_file_status_between_commit(repo: String, commit_hash1: String, commi
 }
 
 #[napi]
+/**
+ * get difference files diff between two commits
+ * @param repo repo path
+ * @param commit_hash1 commit hash1
+ * @param commit_hash2 commit hash2
+ * @returns FileDiffContext
+ */
 fn get_files_diff_context (repo: String, commit_hash1: String, commit_hash2: String) -> Result<Vec<FileDiffContext>, JsError> {
     let mut result = Vec::new();
     let files_status = get_files_status_between_commit(repo.to_string(), commit_hash1.to_string(), commit_hash2.to_string());
@@ -1219,7 +1242,7 @@ fn get_files_diff_context (repo: String, commit_hash1: String, commit_hash2: Str
                         let name2 = names[1];
                         let content1 = get_file_content(repo.to_string(), commit_hash1.to_string(), name1.to_string());
                         let content2 = get_file_content(repo.to_string(), commit_hash2.to_string(), name2.to_string());
-                        let file_change_stat = get_diff_file_status_between_commit(repo.to_string(), commit_hash1.to_string(), commit_hash2.to_string(), name1.to_string(), name2.to_string());
+                        let file_change_stat = get_diff_file_stat_between_commit(repo.to_string(), commit_hash1.to_string(), commit_hash2.to_string(), name1.to_string(), name2.to_string());
                         match (content1, content2) {
                             (Ok(content1), Ok(content2)) => {
                                 if is_binary(&content1) && is_binary(&content2) {
