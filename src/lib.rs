@@ -2,8 +2,8 @@
 use regex::Regex;
 use std::{collections::{HashMap, HashSet}, env::VarError, error::Error, fmt::format, io, os::windows::process::CommandExt, process::{Command, Output}};
 use napi::{Error as napiError, JsError};
-use structs::{Author, AuthorStatDailyContribute, Branch, BranchCreatedInfo, BranchStatDailyContribute, FileDiffContext, FileLineChangeStat, FileStatus, FileStatusReport, FileStatusType, Remote, RepoFileInfo, RepositoryFull, RepositorySimple, StatDailyContribute};
-use util::get_basename;
+use structs::{Author, AuthorStatDailyContribute, Branch, BranchCreatedInfo, BranchStatDailyContribute, FileDiffContext, FileLineChangeStat, FileStatus, FileStatusReport, FileStatusType, Remote, RepoFileInfo, RepoStatus, RepositoryFull, RepositorySimple, StatDailyContribute};
+use util::{get_basename, get_current_time};
 
 
 mod structs;
@@ -21,7 +21,9 @@ fn get_command_output(prog: &str, path: &str, args: &[&str]) -> io::Result<Outpu
     });
     // 创建进程时，设置创建进程的标志，以隐藏窗口
     cmd.creation_flags(0x08000000);
-    cmd.current_dir(path);
+    if !path.is_empty(){
+        cmd.current_dir(path);
+    }
     cmd.output()
 }
 
@@ -114,11 +116,11 @@ fn is_pushed (path: String, branch: String) -> Result<bool, JsError> {
                 return Ok(false);
             }
             else {
-                let has_pushed = get_command_output("git", &path, &["cherry", &format!("{}/{}", remote, branch)]);
+                let has_pushed = get_command_output("git", &path, &["cherry", &format!("{}/{}", remote.trim(), branch)]);
                 match has_pushed {
                     Ok(output) => {
                         let stdout = String::from_utf8_lossy(&output.stdout);
-                        Ok(!stdout.trim().is_empty())
+                        Ok(stdout.trim().is_empty())
                     }
                     Err(e) => {
                         let err = napiError::from(e);
@@ -135,21 +137,35 @@ fn is_pushed (path: String, branch: String) -> Result<bool, JsError> {
 
 #[napi]
 /**
+ * Get the status of a repository
+ * @param path path to the repository
+ */
+fn get_status (path: String) -> Result<RepoStatus, JsError> {
+    let commit = is_commited(path.to_string())?;
+    if !commit {
+        return Ok(RepoStatus::UnCommit);
+    } else {
+        let current_branch = get_current_branch(path.to_string())?;
+        let pushed = is_pushed(path.to_string(), current_branch)?;
+        if !pushed {
+            return Ok(RepoStatus::UnPush)
+        } else {
+            return Ok(RepoStatus::Ok)
+        }
+    }
+}
+
+#[napi]
+/**
  * Get the current branch name
  * @param path path to the repository
  */
-fn get_current_branch(path: String) -> Result<Branch, JsError> {
+fn get_current_branch(path: String) -> Result<String, JsError> {
     let output = get_command_output("git", &path, &["rev-parse", "--abbrev-ref", "HEAD"]);
     match output {
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            let author = get_branch_authors(path.to_string(), stdout.to_string())?;
-            let created_info = get_branch_create_info(path.to_string(), stdout.to_string())?;
-            Ok(Branch {
-                name: stdout.to_string(),
-                created: created_info,
-                authors: author,
-            })
+            Ok(stdout.to_string())
         }
         Err(e) => {
             let err = napiError::from(e);
@@ -385,7 +401,10 @@ fn get_branch_authors (path: String, branch: String) ->Result<Vec<Author>, JsErr
             for line in lines.trim().split("\n") {
                 let keys = line.split_ascii_whitespace().collect::<Vec<_>>();
                 let author_name = keys[1].to_string();
-                let author_email = keys[2].to_string();
+                let mut author_email = keys[2].to_string();
+                if author_email.contains("<") && author_email.contains(">"){
+                    author_email = author_email.split("<").collect::<Vec<_>>()[1].split(">").collect::<Vec<_>>()[0].to_string();
+                }
                 authors.push(Author {
                     name: author_name,
                     email: author_email,
@@ -406,16 +425,16 @@ fn get_branch_authors (path: String, branch: String) ->Result<Vec<Author>, JsErr
  * @param path path to the repository
 */
 fn get_all_authors (path: String) -> Result<Vec<Author>, JsError> {
-    let placeholders = vec![String::from("%an"), String::from("%ae")];
-    let output = get_command_output("git", &path, &["shortlog", "-sne"]);
+    let output = get_command_output("git", &path, &["log", &format!("--pretty=format:%an{}%ae", PARAM_INTERVAL)]);
     match output {
         Ok(output) => {
             let mut authors = HashSet::<Author>::new();
-            let lines = String::from_utf8_lossy(&output.stdout);
-            for line in lines.trim().split("\n") {
-                let keys = line.split_ascii_whitespace().collect::<Vec<_>>();
-                let author_name = keys[1].to_string();
-                let author_email = keys[2].to_string();
+            let output = String::from_utf8_lossy(&output.stdout);
+            println!("{}", output);
+            for line in output.trim().split("\n") {
+                let keys = line.split(PARAM_INTERVAL).collect::<Vec<_>>();
+                let author_name = keys[0].to_string();
+                let author_email = keys[1].to_string();
                 authors.insert(Author {
                     name: author_name,
                     email: author_email,
@@ -498,18 +517,11 @@ fn get_repository_info_full (path: String) -> Result<RepositoryFull, JsError> {
     let branches = get_branches(path.to_string())?;
     let authors = get_all_authors(path.to_string())?;
     let current_branch = get_current_branch(path.to_string())?;
-    let mut branches_arr = Vec::<Branch>::new();
+    let mut branches_arr = Vec::<String>::new();
     for branch in branches.iter() {
         // get branch info
         let branch_name = branch.to_string();
-        let branch_info = get_branch_create_info(path.to_string(), branch_name.to_string())?;
-        let branch_authors = get_branch_authors(path.to_string(), branch_name.to_string())?;
-        let branch = Branch {
-            name: branch_name.to_string(),
-            created: branch_info,
-            authors: branch_authors.clone(),
-        };
-        branches_arr.push(branch);
+        branches_arr.push(branch_name);
     };
     
     // get repository name
@@ -527,7 +539,7 @@ fn get_repository_info_full (path: String) -> Result<RepositoryFull, JsError> {
     let remote = get_remote(path.to_string())?;
     Ok(RepositoryFull {
         current_branch: current_branch.clone(),
-        branches: branches_arr.iter().map(| item | (*item).clone()).collect::<Vec<Branch>>(),
+        branches: branches_arr,
         authors: authors.iter().map(| item | (*item).clone()).collect::<Vec<Author>>(),
         name: name,
         remote: remote,
@@ -552,7 +564,7 @@ fn get_repository_info_simple (path: String) -> Result<RepositorySimple, JsError
     Ok(RepositorySimple {
         name: util::get_basename(&path).unwrap(),
         branches: branches_arr,
-        current_branch: current_branch.name,
+        current_branch: current_branch,
         path: path,
         authors,
         remote
@@ -584,7 +596,7 @@ fn log_shortstat_parse (status: &str) -> Result<(i32, i32, i32), String> {
  * Get the statistic of daily contribute in a branch
  */
 fn get_contribute_stat (path: String, branch: String) -> Result<BranchStatDailyContribute, JsError> {
-    let format = "--pretty=format:".to_string()+ COMMIT_INETRVAL + "%an" + PARAM_INTERVAL + "%ae" + PARAM_INTERVAL + "%at";
+    let format = "--pretty=format:".to_string()+ COMMIT_INETRVAL + "%an" + PARAM_INTERVAL + "%ae" + PARAM_INTERVAL + "%cs";
     let branch_create_info = get_branch_create_info(path.to_string(), branch.to_string())?;
     let start_flag = format!("{}..HEAD", branch_create_info.hash);
     let output = get_command_output("git", &path, &["log", &branch, &start_flag, "--shortstat", &format, "--reverse"]);
@@ -592,8 +604,8 @@ fn get_contribute_stat (path: String, branch: String) -> Result<BranchStatDailyC
         Ok(output) => {
             let mut authors_stat = HashMap::<String, AuthorStatDailyContribute>::new();
             let mut total_stat = StatDailyContribute {
-                commit_count: 0,
-                data_list: Vec::<String>::new(),
+                commit_count: Vec::<i32>::new(),
+                date_list: Vec::<String>::new(),
                 insertion: Vec::<i32>::new(),
                 deletions: Vec::<i32>::new(),
                 change_files: Vec::<i32>::new(),
@@ -618,16 +630,17 @@ fn get_contribute_stat (path: String, branch: String) -> Result<BranchStatDailyC
                 // if this author has contained
                 if authors_stat.contains_key(&name) {
                     let author = authors_stat.get_mut(&name).unwrap();
-                    author.stat.commit_count += 1;
-                    let len = author.stat.data_list.len();
+                    let len = author.stat.date_list.len();
                     // if one day has multiple commits
-                    if author.stat.data_list[len - 1] == date {
+                    if author.stat.date_list[len - 1] == date {
+                        author.stat.commit_count[len - 1] += 1;
                         author.stat.change_files[len - 1] = changes;
                         author.stat.insertion[len - 1] = insertions;
                         author.stat.deletions[len - 1] = deletions;
                     } else {
                         // new day and first commit
-                        author.stat.data_list.push(date.to_string());
+                        author.stat.date_list.push(date.to_string());
+                        author.stat.commit_count.push(1);
                         author.stat.insertion.push(insertions);
                         author.stat.deletions.push(deletions);
                         author.stat.change_files.push(changes);
@@ -640,34 +653,35 @@ fn get_contribute_stat (path: String, branch: String) -> Result<BranchStatDailyC
                             email: email,
                         },
                         stat: StatDailyContribute {
-                            commit_count: 1,
-                            data_list: Vec::<String>::new(),
+                            commit_count: Vec::<i32>::new(),
+                            date_list: Vec::<String>::new(),
                             insertion: Vec::<i32>::new(),
                             deletions: Vec::<i32>::new(),
                             change_files: Vec::<i32>::new(),
                         }
                     };
-                    author.stat.data_list.push(date.to_string());
+                    author.stat.date_list.push(date.to_string());
+                    author.stat.commit_count.push(1);
                     author.stat.insertion.push(insertions);
                     author.stat.deletions.push(deletions);
                     author.stat.change_files.push(changes);
                     authors_stat.insert(name, author);
                 }
                 // total stat
-                total_stat.commit_count += 1;
-                let len = total_stat.data_list.len();
-                if len > 0 && total_stat.data_list[len - 1] == date {
+                let len = total_stat.date_list.len();
+                if len > 0 && total_stat.date_list[len - 1] == date {
+                    total_stat.commit_count[len - 1] += 1;
                     total_stat.change_files[len - 1] = changes;
                     total_stat.insertion[len - 1] = insertions;
                     total_stat.deletions[len - 1] = deletions;
                 } else {
                     // new day and first commit
-                    total_stat.data_list.push(date.to_string());
-                    total_stat.data_list.push(date.to_string());
+                    total_stat.date_list.push(date.to_string());
+                    total_stat.commit_count.push(1);
                     total_stat.insertion.push(insertions);
                     total_stat.deletions.push(deletions);
                     total_stat.change_files.push(changes);
-                    // println!("{} {} {} {} {}",change_info.len(),  total_stat.data_list.len(), total_stat.insertion.len(), total_stat.deletions.len(), total_stat.change_files.len())
+                    println!("{:#?}", total_stat)
                 }
             }
             Ok(BranchStatDailyContribute {
@@ -771,7 +785,7 @@ fn file_info_list_to_tree (file_info_list: Vec<&str>) -> Vec<RepoFileInfo> {
  * Get the file list of a repository
  */
 fn get_repo_file_list (path: String, branch_or_hash: String) -> Result<Vec<RepoFileInfo>, JsError> {
-    let format = format!("--format=\"%(objectmode){}%(objecttype){}%(objectsize:padded){}%(objectname){}%(path)\"", PARAM_INTERVAL, PARAM_INTERVAL, PARAM_INTERVAL, PARAM_INTERVAL);
+    let format = format!("--format=%(objectmode){}%(objecttype){}%(objectsize:padded){}%(objectname){}%(path)", PARAM_INTERVAL, PARAM_INTERVAL, PARAM_INTERVAL, PARAM_INTERVAL);
     let output = get_command_output("git", &path, &["ls-tree", "-r", &branch_or_hash, &format]);
     match output {
         Ok(output) => {
@@ -1365,10 +1379,51 @@ fn get_files_diff_context (repo: String, commit_hash1: String, commit_hash2: Str
     }
 }
 
+#[napi]
+fn get_commit_within_branches (repo: String, commit_hash: String) -> Result<Vec<String>, JsError> {
+    let formawt = r"--format=%(refname:short)";
+    let output = get_command_output("git", &repo, &["branch", "--contains", &commit_hash, &formawt]);
+    match output {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let branches = stdout.split("\n").collect::<Vec<&str>>();
+            let mut result = Vec::<String>::new();
+            for branch in branches {
+                if branch.len() > 0 {
+                    result.push(branch.to_string());
+                }
+            }
+            Ok(result)
+        },
+        Err(e) => {
+            let err = napiError::from(e);
+            Err(JsError::from(err))
+        }
+    }
+}
+
+#[napi]
+fn get_branch_commit_count (path: String, branch: String) -> Result<i32, JsError> {
+    let output = get_command_output("git", &path, &["rev-list", "--count", &branch]);
+    match output {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if stdout.trim().len() == 0 {
+                return Ok(0)
+            }
+            let count = stdout.trim().parse::<i32>().unwrap();
+            Ok(count)
+        },
+        Err(e) => {
+            let err =napiError::from(e);
+            Err(JsError::from(err))
+        }
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
-    use core::time;
 
     use util::get_current_time;
 
@@ -1517,6 +1572,106 @@ mod tests {
                 println!("{:#?}", res);
             },
             Err(e) => {
+                println!("ERROR");
+            }
+        }
+    }
+
+    #[test]
+    fn test_is_pushed() {
+        let path = String::from(r"E:\workSpace\Python_Project_File\wizvision3");
+        let res = is_pushed(path.to_string(), "3.3.4".to_string());
+        match res {
+            Ok(res) => {
+                println!("{:#?}", res);
+            },
+            Err(e) => {
+                println!("ERROR");
+            }
+        }
+    }
+
+    #[test]
+    fn test_get_contribute_stat() {
+        let path = String::from(r"E:\workSpace\Python_Project_File\wizvision3");
+        let res = get_contribute_stat(path.to_string(), "3.3.4".to_string());
+        match res {
+            Ok(res) => {
+                println!("{:#?}", res);
+            },
+            Err(e) => {
+                println!("ERROR");
+            }
+        }
+    }
+
+    #[test]
+    fn test_get_commit_within_branches() {
+        let path = String::from(r"E:\workSpace\JavaScript\giter");
+        let hash = "274b8619bd9483f9e0622814987c253285584d0d";
+        let res = get_commit_within_branches(path.to_string(), hash.to_string());
+        match res {
+            Ok(res) => {
+                println!("{:#?}", res);
+            },
+            Err(e) => {
+                println!("ERROR");
+            }
+        }
+    }
+
+    #[test]
+    fn test_get_status() {
+        let path = String::from(r"E:\workSpace\Python_Project_File\wizvision3");
+        let res = get_status(path.to_string());
+        match res {
+            Ok(res) => {
+                println!("{:#?}", res);
+            },
+            Err(e) => {
+                println!("ERROR");
+            }
+        }
+    }
+
+    #[test]
+    fn test_get_all_authors () {
+        let path = String::from(r"E:\workSpace\Python_Project_File\wizvision3");
+        let res = get_all_authors(path.to_string());
+        match res {
+            Ok(res) => {
+                println!("{:#?}", res);
+            },
+            Err(_) => {
+                println!("ERROR");
+            }
+        }
+    }
+    #[test]
+    fn test_get_branch_authors () {
+        let path = String::from(r"E:\workSpace\Python_Project_File\wizvision3");
+        let branch = "3.3.4".to_string();
+        let res = get_branch_authors(path.to_string(), branch);
+        match res {
+            Ok(res) => {
+                println!("{:#?}", res);
+            },
+            Err(_) => {
+                println!("ERROR");
+            }
+        }
+    }
+
+    #[test]
+    fn test_get_branch_commit_count() {
+        let path = String::from(r"E:\workSpace\Python_Project_File\wizvision3");
+        let branch = "3.3.4".to_string();
+        let res = get_branch_commit_count(path.to_string(), branch);
+        match res {
+            Ok(res) => {
+                println!("{:#?}", res);
+            },
+            Err(_) => {
                 println!("ERROR");
             }
         }

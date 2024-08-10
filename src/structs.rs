@@ -22,6 +22,17 @@ impl Hash for Author {
     }
 }
 
+#[napi]
+#[derive(Debug, PartialEq)]
+pub enum RepoStatus {
+    UnCommit,
+    UnPush,
+    UnPull,
+    UnKnown,
+    Ok
+}
+
+
 
 
 #[napi(object)]
@@ -52,8 +63,8 @@ pub struct Remote {
 #[napi(object)]
 #[derive(Clone)]
 pub struct RepositoryFull {
-    pub current_branch: Branch,
-    pub branches: Vec<Branch>,
+    pub current_branch: String,
+    pub branches: Vec<String>,
     pub authors: Vec<Author>,
     pub name: String,
     pub remote: Vec<Remote>,
@@ -73,27 +84,27 @@ pub struct RepositorySimple {
 }
 
 #[napi(object)]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 /**
  * The statistic of daily contribute in a branch
  */
 pub struct StatDailyContribute {
-    pub commit_count: i32,
-    pub data_list: Vec<String>,
+    pub commit_count: Vec<i32>,
+    pub date_list: Vec<String>,
     pub insertion: Vec<i32>,
     pub deletions: Vec<i32>,
     pub change_files: Vec<i32>
 }
 
 #[napi(object)]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct AuthorStatDailyContribute {
     pub author : Author,
     pub stat: StatDailyContribute,
 }
 
 #[napi(object)]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct BranchStatDailyContribute {
     pub branch: String,
     pub total_stat: StatDailyContribute,

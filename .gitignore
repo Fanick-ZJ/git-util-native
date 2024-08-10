@@ -197,3 +197,5 @@ Cargo.lock
 *.node
 *.js
 *.ts
+
+.vscode
