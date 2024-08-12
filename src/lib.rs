@@ -3,7 +3,7 @@ use regex::Regex;
 use std::{collections::{HashMap, HashSet}, env::VarError, error::Error, fmt::format, io, os::windows::process::CommandExt, process::{Command, Output}};
 use napi::{Error as napiError, JsError};
 use structs::{Author, AuthorStatDailyContribute, Branch, BranchCreatedInfo, BranchStatDailyContribute, FileDiffContext, FileLineChangeStat, FileStatus, FileStatusReport, FileStatusType, Remote, RepoFileInfo, RepoStatus, RepositoryFull, RepositorySimple, StatDailyContribute};
-use util::{get_basename, get_current_time};
+use util::{build_commit_range, get_basename, get_current_time};
 
 
 mod structs;
@@ -343,16 +343,8 @@ fn get_format_key_map() -> HashMap<String, String> {
  */
 fn get_commit_log_format(path: String, placeholders: Vec<String>, start_commit: String, end_commit: String) -> Result<Vec<HashMap<String, String>>, JsError> {
     let mut format = String::from("--pretty=format:");
-    let commit_range = if start_commit.is_empty() && end_commit.is_empty(){
-        String::from("HEAD")
-    } else if start_commit.is_empty() && !end_commit.is_empty(){
-        format!("{}", end_commit)
-    } else if !start_commit.is_empty() && end_commit.is_empty(){
-        format!("{}^..HEAD", start_commit)
-    } else {
-        format!("{}^..{}", start_commit, end_commit)
-    };
-    println!("{}", commit_range);
+    let commit_range = build_commit_range(&start_commit, &end_commit);
+    // println!("{}", commit_range);
     for key in placeholders.iter(){
         format = format + &key + PARAM_INTERVAL;
     }
@@ -399,6 +391,9 @@ fn get_branch_authors (path: String, branch: String) ->Result<Vec<Author>, JsErr
             let mut authors = Vec::<Author>::new();
             let lines = String::from_utf8_lossy(&output.stdout);
             for line in lines.trim().split("\n") {
+                if line.is_empty(){
+                    continue;
+                }
                 let keys = line.split_ascii_whitespace().collect::<Vec<_>>();
                 let author_name = keys[1].to_string();
                 let mut author_email = keys[2].to_string();
@@ -484,6 +479,21 @@ fn get_branch_create_info (path: String, branch: String) -> Result<BranchCreated
     }
 
 
+}
+
+#[napi]
+fn get_branch_last_commit(path: String, branch: String) -> Result<String, JsError> {
+    let output = get_command_output("git", &path, &["rev-parse", &branch]);
+    match output {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            Ok(stdout.trim().to_string())
+        }
+        Err(e) => {
+            let err = napiError::from(e);
+            Err(JsError::from(err))
+        }
+    }
 }
 
 #[napi]
@@ -599,7 +609,7 @@ fn get_contribute_stat (path: String, branch: String) -> Result<BranchStatDailyC
     let format = "--pretty=format:".to_string()+ COMMIT_INETRVAL + "%an" + PARAM_INTERVAL + "%ae" + PARAM_INTERVAL + "%cs";
     let branch_create_info = get_branch_create_info(path.to_string(), branch.to_string())?;
     let start_flag = format!("{}..HEAD", branch_create_info.hash);
-    let output = get_command_output("git", &path, &["log", &branch, &start_flag, "--shortstat", &format, "--reverse"]);
+    let output = get_command_output("git", &path, &["log", &start_flag, "--shortstat", &format, "--reverse"]);
     match output {
         Ok(output) => {
             let mut authors_stat = HashMap::<String, AuthorStatDailyContribute>::new();
@@ -681,7 +691,7 @@ fn get_contribute_stat (path: String, branch: String) -> Result<BranchStatDailyC
                     total_stat.insertion.push(insertions);
                     total_stat.deletions.push(deletions);
                     total_stat.change_files.push(changes);
-                    println!("{:#?}", total_stat)
+                    // println!("{:#?}", total_stat)
                 }
             }
             Ok(BranchStatDailyContribute {
@@ -1594,10 +1604,10 @@ mod tests {
     #[test]
     fn test_get_contribute_stat() {
         let path = String::from(r"E:\workSpace\Python_Project_File\wizvision3");
-        let res = get_contribute_stat(path.to_string(), "3.3.4".to_string());
+        let res = get_contribute_stat(path.to_string(), "3.3.3".to_string());
         match res {
             Ok(res) => {
-                println!("{:#?}", res);
+                println!("{:#?}", res.total_stat.date_list);
             },
             Err(e) => {
                 println!("ERROR");
@@ -1650,7 +1660,7 @@ mod tests {
     #[test]
     fn test_get_branch_authors () {
         let path = String::from(r"E:\workSpace\Python_Project_File\wizvision3");
-        let branch = "3.3.4".to_string();
+        let branch = "3.3.3".to_string();
         let res = get_branch_authors(path.to_string(), branch);
         match res {
             Ok(res) => {
