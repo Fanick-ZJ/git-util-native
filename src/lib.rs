@@ -456,6 +456,7 @@ fn get_branch_create_info (path: String, branch: String) -> Result<BranchCreated
     match output {
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
+            println!("{}", stdout);
             let keys = stdout.trim().split(PARAM_INTERVAL).collect::<Vec<_>>();
             let author_name = keys[0].to_string();
             let author_email = keys[1].to_string();
@@ -607,9 +608,8 @@ fn log_shortstat_parse (status: &str) -> Result<(i32, i32, i32), String> {
  */
 fn get_contribute_stat (path: String, branch: String) -> Result<BranchStatDailyContribute, JsError> {
     let format = "--pretty=format:".to_string()+ COMMIT_INETRVAL + "%an" + PARAM_INTERVAL + "%ae" + PARAM_INTERVAL + "%cs";
-    let branch_create_info = get_branch_create_info(path.to_string(), branch.to_string())?;
-    let start_flag = format!("{}..HEAD", branch_create_info.hash);
-    let output = get_command_output("git", &path, &["log", &start_flag, "--shortstat", &format, "--reverse"]);
+    let commit_range = build_commit_range("", &branch);
+    let output = get_command_output("git", &path, &["log", "--shortstat", &format, "--reverse", &commit_range]);
     match output {
         Ok(output) => {
             let mut authors_stat = HashMap::<String, AuthorStatDailyContribute>::new();
@@ -1603,11 +1603,11 @@ mod tests {
 
     #[test]
     fn test_get_contribute_stat() {
-        let path = String::from(r"E:\workSpace\Python_Project_File\wizvision3");
-        let res = get_contribute_stat(path.to_string(), "3.3.3".to_string());
+        let path = String::from(r"E:\workSpace\JavaScript\giter");
+        let res = get_contribute_stat(path.to_string(),"main".to_string());
         match res {
             Ok(res) => {
-                println!("{:#?}", res.total_stat.date_list);
+                println!("{:#?}", res.total_stat);
             },
             Err(e) => {
                 println!("ERROR");
